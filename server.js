@@ -548,10 +548,6 @@ app.post("/api/check", async (req, res) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Stealth tools API listening on port ${PORT}`);
-});
-
 app.post("/api/email-check", async (req, res) => {
   const rawDomain = req.body?.domain;
   const domain = rawDomain?.trim().toLowerCase();
@@ -588,4 +584,8 @@ app.post("/api/prioritized-check", async (req, res) => {
     checkedAt: new Date().toISOString(),
     ...result
   });
+});
+
+app.listen(PORT, () => {
+  console.log(`Stealth tools API listening on port ${PORT}`);
 });
