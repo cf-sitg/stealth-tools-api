@@ -1,0 +1,17 @@
+{
+  "name": "stealth-tools-api",
+  "version": "1.0.0",
+  "description": "Stealth IT Group tools API",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
