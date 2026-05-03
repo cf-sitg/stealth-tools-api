@@ -163,6 +163,235 @@ async function checkEmailSecurity(domain) {
   };
 }
 
+async function runPrioritizedCheck(domain) {
+  const [exposure, email] = await Promise.all([
+    Promise.all([
+      checkDns(domain),
+      checkTls(domain),
+      checkHeaders(domain),
+      checkPorts(domain)
+    ]),
+    checkEmailSecurity(domain)
+  ]);
+
+  const [dnsResult, tlsResult, headerResult, portResult] = exposure;
+
+  const issues = [];
+
+  const headers = headerResult?.headers || {};
+  const ports = Array.isArray(portResult) ? portResult : [];
+
+  function addIssue({ title, severity, effort, impact, category, why, fix }) {
+    issues.push({ title, severity, effort, impact, category, why, fix });
+  }
+
+  if (!email.dmarc.present) {
+    addIssue({
+      title: "DMARC is missing",
+      severity: "High",
+      effort: "Low",
+      impact: "High",
+      category: "Email Security",
+      why: "Without DMARC, your domain is more likely to be spoofed in phishing attempts.",
+      fix: "Add a DMARC record starting with monitoring, then move toward quarantine or reject once legitimate mail sources are confirmed."
+    });
+  } else if (email.dmarc.policy === "none") {
+    addIssue({
+      title: "DMARC is not enforced",
+      severity: "Medium",
+      effort: "Low",
+      impact: "High",
+      category: "Email Security",
+      why: "A p=none policy monitors activity but does not prevent spoofed messages from being delivered.",
+      fix: "Review reports, confirm legitimate senders, then move toward p=quarantine or p=reject."
+    });
+  }
+
+  if (!email.spf.present) {
+    addIssue({
+      title: "SPF is missing",
+      severity: "High",
+      effort: "Low",
+      impact: "High",
+      category: "Email Security",
+      why: "SPF helps receiving mail systems identify which servers are allowed to send mail for your domain.",
+      fix: "Publish an SPF record that includes only approved mail senders."
+    });
+  } else if (email.spf.overlyPermissive) {
+    addIssue({
+      title: "SPF is overly permissive",
+      severity: "High",
+      effort: "Low",
+      impact: "High",
+      category: "Email Security",
+      why: "An SPF record using +all allows any sender, which defeats the purpose of SPF.",
+      fix: "Replace +all with a stricter mechanism such as -all after validating your mail sources."
+    });
+  } else if (email.spf.softFail) {
+    addIssue({
+      title: "SPF uses soft fail",
+      severity: "Low",
+      effort: "Low",
+      impact: "Medium",
+      category: "Email Security",
+      why: "Soft fail (~all) is better than nothing, but it is less strict than hard fail.",
+      fix: "After confirming all legitimate senders are included, consider moving from ~all to -all."
+    });
+  }
+
+  if (!email.dkim.present) {
+    addIssue({
+      title: "DKIM was not detected",
+      severity: "Medium",
+      effort: "Medium",
+      impact: "High",
+      category: "Email Security",
+      why: "DKIM helps prove that messages were authorized by the sending domain and were not modified in transit.",
+      fix: "Enable DKIM signing in your email platform and publish the selector record provided by your mail provider."
+    });
+  }
+
+  if (!tlsResult.httpsAvailable) {
+    addIssue({
+      title: "HTTPS is unavailable",
+      severity: "High",
+      effort: "Medium",
+      impact: "High",
+      category: "Web Security",
+      why: "Visitors should not be forced onto an unencrypted connection.",
+      fix: "Install a valid TLS certificate and force HTTPS."
+    });
+  } else if (!tlsResult.authorized) {
+    addIssue({
+      title: "TLS certificate is not trusted",
+      severity: "High",
+      effort: "Medium",
+      impact: "High",
+      category: "Web Security",
+      why: "A broken or untrusted certificate can cause browser warnings and reduce trust.",
+      fix: "Replace or renew the TLS certificate with a trusted certificate."
+    });
+  } else if (tlsResult.daysRemaining !== null && tlsResult.daysRemaining < 30) {
+    addIssue({
+      title: "TLS certificate expires soon",
+      severity: "Medium",
+      effort: "Low",
+      impact: "Medium",
+      category: "Web Security",
+      why: "Expiring certificates can cause outages and browser warnings.",
+      fix: "Renew the certificate before expiration."
+    });
+  }
+
+  if (!headers.hsts) {
+    addIssue({
+      title: "HSTS header is missing",
+      severity: "Medium",
+      effort: "Low",
+      impact: "Medium",
+      category: "Web Security",
+      why: "HSTS tells browsers to use HTTPS automatically after the first visit.",
+      fix: "Add a Strict-Transport-Security header once HTTPS is fully working."
+    });
+  }
+
+  if (!headers.csp) {
+    addIssue({
+      title: "Content Security Policy is missing",
+      severity: "Medium",
+      effort: "Medium",
+      impact: "High",
+      category: "Web Security",
+      why: "CSP helps reduce the impact of script injection and content loading risks.",
+      fix: "Add a Content-Security-Policy header that only allows trusted sources."
+    });
+  }
+
+  if (!headers.xFrameOptions) {
+    addIssue({
+      title: "Clickjacking protection is missing",
+      severity: "Medium",
+      effort: "Low",
+      impact: "Medium",
+      category: "Web Security",
+      why: "Without frame protection, your site may be embedded in a malicious page.",
+      fix: "Add X-Frame-Options: DENY or use frame-ancestors in CSP."
+    });
+  }
+
+  if (!headers.xContentTypeOptions) {
+    addIssue({
+      title: "MIME sniffing protection is missing",
+      severity: "Low",
+      effort: "Low",
+      impact: "Medium",
+      category: "Web Security",
+      why: "X-Content-Type-Options helps prevent browsers from interpreting files as a different content type.",
+      fix: "Add X-Content-Type-Options: nosniff."
+    });
+  }
+
+  if (!headers.referrerPolicy) {
+    addIssue({
+      title: "Referrer policy is missing",
+      severity: "Low",
+      effort: "Low",
+      impact: "Low",
+      category: "Web Security",
+      why: "A referrer policy reduces unnecessary URL information shared with other sites.",
+      fix: "Add Referrer-Policy: strict-origin-when-cross-origin."
+    });
+  }
+
+  const rdpOpen = ports.some(p => p.port === 3389 && p.status === "open");
+  const sshOpen = ports.some(p => p.port === 22 && p.status === "open");
+
+  if (rdpOpen) {
+    addIssue({
+      title: "RDP appears exposed",
+      severity: "High",
+      effort: "Medium",
+      impact: "High",
+      category: "Network Exposure",
+      why: "Public RDP exposure is a common target for brute force and ransomware activity.",
+      fix: "Restrict RDP behind VPN, zero trust access, or source IP allowlists."
+    });
+  }
+
+  if (sshOpen) {
+    addIssue({
+      title: "SSH appears exposed",
+      severity: "Medium",
+      effort: "Medium",
+      impact: "High",
+      category: "Network Exposure",
+      why: "Public SSH can be acceptable when hardened, but it is frequently scanned and attacked.",
+      fix: "Restrict SSH access, require keys, disable password login, and monitor authentication attempts."
+    });
+  }
+
+  const severityRank = { High: 3, Medium: 2, Low: 1 };
+
+  issues.sort((a, b) => severityRank[b.severity] - severityRank[a.severity]);
+
+  return {
+    summary: {
+      totalIssues: issues.length,
+      high: issues.filter(i => i.severity === "High").length,
+      medium: issues.filter(i => i.severity === "Medium").length,
+      low: issues.filter(i => i.severity === "Low").length
+    },
+    issues,
+    raw: {
+      dns: dnsResult,
+      tls: tlsResult,
+      headers: headerResult,
+      ports: portResult,
+      email
+    }
+  };
+}
+
 async function checkHeaders(domain) {
   return new Promise(resolve => {
     const req = https.request(
@@ -339,5 +568,24 @@ app.post("/api/email-check", async (req, res) => {
     domain,
     checkedAt: new Date().toISOString(),
     emailSecurity
+  });
+});
+
+app.post("/api/prioritized-check", async (req, res) => {
+  const rawDomain = req.body?.domain;
+  const domain = rawDomain?.trim().toLowerCase();
+
+  if (!isValidDomain(domain)) {
+    return res.status(400).json({
+      error: "Invalid domain. Enter a public domain like example.com."
+    });
+  }
+
+  const result = await runPrioritizedCheck(domain);
+
+  res.json({
+    domain,
+    checkedAt: new Date().toISOString(),
+    ...result
   });
 });
