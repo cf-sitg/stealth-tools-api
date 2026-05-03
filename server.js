@@ -78,6 +78,91 @@ async function checkDns(domain) {
   };
 }
 
+async function checkEmailSecurity(domain) {
+  const txt = await safeDnsLookup("TXT", domain);
+  const flatTxt = txt.map(record => record.join(""));
+
+  const spf = flatTxt.find(value => value.toLowerCase().startsWith("v=spf1")) || null;
+
+  const dmarcRecords = await safeDnsLookup("TXT", `_dmarc.${domain}`);
+  const flatDmarc = dmarcRecords.map(record => record.join(""));
+  const dmarc = flatDmarc.find(value => value.toLowerCase().startsWith("v=dmarc1")) || null;
+
+  const commonSelectors = [
+    "google",
+    "selector1",
+    "selector2",
+    "default",
+    "k1",
+    "dkim",
+    "mail",
+    "s1",
+    "s2"
+  ];
+
+  const dkimResults = [];
+
+  for (const selector of commonSelectors) {
+    const records = await safeDnsLookup("TXT", `${selector}._domainkey.${domain}`);
+    const flattened = records.map(record => record.join(""));
+    const found = flattened.find(value => value.toLowerCase().includes("v=dkim1"));
+
+    if (found) {
+      dkimResults.push({
+        selector,
+        present: true,
+        value: found
+      });
+    }
+  }
+
+  let dmarcPolicy = null;
+
+  if (dmarc) {
+    const policyMatch = dmarc.match(/p=([^;]+)/i);
+    dmarcPolicy = policyMatch ? policyMatch[1].toLowerCase() : null;
+  }
+
+  const spfPresent = Boolean(spf);
+  const dmarcPresent = Boolean(dmarc);
+  const dkimPresent = dkimResults.length > 0;
+
+  let spoofingRisk = "Low";
+
+  if (!spfPresent && !dmarcPresent) {
+    spoofingRisk = "High";
+  } else if (!dmarcPresent) {
+    spoofingRisk = "High";
+  } else if (dmarcPolicy === "none") {
+    spoofingRisk = "Medium";
+  } else if (!dkimPresent) {
+    spoofingRisk = "Medium";
+  }
+
+  return {
+    spf: {
+      present: spfPresent,
+      value: spf,
+      overlyPermissive: spf ? spf.includes("+all") : false,
+      softFail: spf ? spf.includes("~all") : false,
+      hardFail: spf ? spf.includes("-all") : false
+    },
+    dmarc: {
+      present: dmarcPresent,
+      value: dmarc,
+      policy: dmarcPolicy,
+      reportingEnabled: dmarc ? dmarc.includes("rua=") : false
+    },
+    dkim: {
+      present: dkimPresent,
+      selectorsFound: dkimResults
+    },
+    summary: {
+      spoofingRisk
+    }
+  };
+}
+
 async function checkHeaders(domain) {
   return new Promise(resolve => {
     const req = https.request(
@@ -236,4 +321,23 @@ app.post("/api/check", async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Stealth tools API listening on port ${PORT}`);
+});
+
+app.post("/api/email-check", async (req, res) => {
+  const rawDomain = req.body?.domain;
+  const domain = rawDomain?.trim().toLowerCase();
+
+  if (!isValidDomain(domain)) {
+    return res.status(400).json({
+      error: "Invalid domain. Enter a public domain like example.com."
+    });
+  }
+
+  const emailSecurity = await checkEmailSecurity(domain);
+
+  res.json({
+    domain,
+    checkedAt: new Date().toISOString(),
+    emailSecurity
+  });
 });
